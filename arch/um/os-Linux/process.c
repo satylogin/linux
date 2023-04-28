@@ -22,13 +22,12 @@
 #define FAILURE_PID    -1
 
 #define STAT_PATH_LEN sizeof("/proc/#######/stat\0")
-#define COMM_SCANF "%*[^)])"
 
 unsigned long os_process_pc(int pid)
 {
 	char proc_stat[STAT_PATH_LEN], buf[256];
 	unsigned long pc = ARBITRARY_ADDR;
-	int fd, err;
+	int fd, bytes_read;
 
 	sprintf(proc_stat, "/proc/%d/stat", pid);
 	fd = open(proc_stat, O_RDONLY, 0);
@@ -37,7 +36,7 @@ unsigned long os_process_pc(int pid)
 		       "errno = %d\n", proc_stat, errno);
 		goto out;
 	}
-	CATCH_EINTR(err = read(fd, buf, sizeof(buf)));
+	CATCH_EINTR(bytes_read = read(fd, buf, sizeof(buf)));
 	if (err < 0) {
 		printk(UM_KERN_ERR "os_process_pc - couldn't read '%s', "
 		       "err = %d\n", proc_stat, errno);
@@ -45,11 +44,27 @@ unsigned long os_process_pc(int pid)
 	}
 	os_close_file(fd);
 	pc = ARBITRARY_ADDR;
-	if (sscanf(buf, "%*d " COMM_SCANF " %*c %*d %*d %*d %*d %*d %*d %*d "
-		   "%*d %*d %*d %*d %*d %*d %*d %*d %*d %*d %*d %*d %*d %*d "
-		   "%*d %*d %*d %*d %*d %lu", &pc) != 1)
-		printk(UM_KERN_ERR "os_process_pc - couldn't find pc in '%s'\n",
-		       buf);
+        /* The line format is "$pid ($comm) $state ...
+         * where comm may contain ) as part of its name, ex:
+         * 12345 (someproc) S 123 456) R ...
+         * So to process valid identified after comm, we should skip comm by
+         * getting the 1st ) from end.
+         */
+        char *ptr = buf + bytes_read - 1;
+        while (*ptr && *ptr != ')' && buf < ptr) {
+          ptr -= 1;
+        }
+        if (*ptr != ')') {
+          printk(UM_KERN_ERR "os_process_pc - couldn't parse '%s'", proc_stat);
+        } else {
+          /*Point to space after ($comm) */
+          ptr += 1;
+	  if (sscanf(ptr, " %*c %*d %*d %*d %*d %*d %*d %*d "
+	  	   "%*d %*d %*d %*d %*d %*d %*d %*d %*d %*d %*d %*d %*d %*d "
+	  	   "%*d %*d %*d %*d %*d %lu", &pc) != 1)
+	  	printk(UM_KERN_ERR "os_process_pc - couldn't find pc in '%s'\n",
+	  	       buf);
+        }
  out_close:
 	close(fd);
  out:
@@ -83,9 +98,25 @@ int os_process_parent(int pid)
 	}
 
 	parent = FAILURE_PID;
-	n = sscanf(data, "%*d " COMM_SCANF " %*c %d", &parent);
-	if (n != 1)
-		printk(UM_KERN_ERR "Failed to scan '%s'\n", data);
+        /* The line format is "$pid ($comm) $state ...
+         * where comm may contain ) as part of its name, ex:
+         * 12345 (someproc) S 123 456) R ...
+         * So to process valid identified after comm, we should skip comm by
+         * getting the 1st ) from end.
+         */
+        char *ptr = data + n - 1;
+        while (*ptr && *ptr != ')' && data < ptr) {
+          ptr -= 1;
+        }
+        if (*ptr != ')') {
+          printk(UM_KERN_ERR "os_process_pc - couldn't parse '%s'", proc_stat);
+        } else {
+          /*Point to space after ($comm) */
+          ptr += 1;
+	  n = sscanf(ptr, " %*c %d", &parent);
+	  if (n != 1)
+	  	printk(UM_KERN_ERR "Failed to scan '%s'\n", data);
+        }
 
 	return parent;
 }
